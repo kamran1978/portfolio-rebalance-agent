@@ -4,7 +4,6 @@ from supabase import create_client, Client
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
-WATI_API_ENDPOINT = os.environ.get("WATI_API_ENDPOINT", "").rstrip("/")
 WATI_ACCESS_TOKEN = os.environ.get("WATI_ACCESS_TOKEN")
 RECIPIENT_NUMBER = os.environ.get("RECIPIENT_WHATSAPP_NUMBER")
 
@@ -38,19 +37,25 @@ def run_portfolio_rebalancer():
 
     report_text = "\n".join(report_lines)
 
-    # Clean endpoint to root domain
-    base = WATI_API_ENDPOINT.split("/api")[0]
-    wati_url = f"{base}/api/v1/sendSessionMessage/{RECIPIENT_NUMBER}?messageText={requests.utils.quote(report_text)}"
-    
+    # Clean phone number (digits only, no + sign)
+    clean_number = "".join(filter(str.isdigit, str(RECIPIENT_NUMBER)))
+
+    wati_url = "https://live-mt-server.wati.io/api/ext/v3/conversations/messages/text"
     headers = {
-        "Authorization": f"Bearer {WATI_ACCESS_TOKEN}"
+        "Authorization": f"Bearer {WATI_ACCESS_TOKEN}",
+        "Content-Type": "application/json"
     }
-    
-    resp = requests.post(wati_url, headers=headers)
+    payload = {
+        "target": clean_number,
+        "text": report_text
+    }
+
+    print(f"Sending message to target: {clean_number}")
+    resp = requests.post(wati_url, headers=headers, json=payload)
     print(f"WATI Status Code: {resp.status_code}")
     print(f"WATI Response Body: {resp.text}")
 
-    if resp.status_code != 200:
+    if resp.status_code not in (200, 201):
         raise Exception(f"WATI dispatch failed with status {resp.status_code}: {resp.text}")
 
     print("Rebalance complete and WhatsApp notification delivered successfully.")
