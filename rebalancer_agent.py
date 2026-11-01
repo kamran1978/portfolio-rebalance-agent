@@ -23,7 +23,7 @@ def run_portfolio_rebalancer():
     holdings = response.data
 
     total_portfolio_value = sum(float(item["current_value"]) for item in holdings)
-    report_lines = [f"*Daily Autonomous Rebalance Report*", f"Total Value: ${total_portfolio_value:,.2f}\n"]
+    report_lines = ["*Daily Autonomous Rebalance Report*", f"Total Value: ${total_portfolio_value:,.2f}\n"]
 
     for item in holdings:
         ticker = item["ticker"]
@@ -38,10 +38,22 @@ def run_portfolio_rebalancer():
 
     report_text = "\n".join(report_lines)
 
-    wati_url = f"{WATI_API_ENDPOINT.rstrip('/')}/api/v1/sendSessionMessage/{RECIPIENT_NUMBER}?messageText={requests.utils.quote(report_text)}"
-    headers = {"Authorization": f"Bearer {WATI_ACCESS_TOKEN}"}
-    requests.post(wati_url, headers=headers)
-    print("Rebalance complete and WhatsApp notification delivered.")
+    base_endpoint = WATI_API_ENDPOINT.rstrip("/")
+    wati_url = f"{base_endpoint}/api/v1/sendSessionMessage/{RECIPIENT_NUMBER}?messageText={requests.utils.quote(report_text)}"
+    
+    headers = {
+        "Authorization": f"Bearer {WATI_ACCESS_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    
+    resp = requests.post(wati_url, headers=headers)
+    print(f"WATI Status Code: {resp.status_code}")
+    print(f"WATI Response Body: {resp.text}")
+
+    if resp.status_code != 200:
+        raise Exception(f"WATI dispatch failed with status {resp.status_code}: {resp.text}")
+
+    print("Rebalance complete and WhatsApp notification delivered successfully.")
 
 if __name__ == "__main__":
     run_portfolio_rebalancer()
