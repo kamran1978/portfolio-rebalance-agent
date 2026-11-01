@@ -4,7 +4,7 @@ from supabase import create_client, Client
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
-WATI_API_ENDPOINT = os.environ.get("WATI_API_ENDPOINT")
+WATI_API_ENDPOINT = os.environ.get("WATI_API_ENDPOINT", "").rstrip("/")
 WATI_ACCESS_TOKEN = os.environ.get("WATI_ACCESS_TOKEN")
 RECIPIENT_NUMBER = os.environ.get("RECIPIENT_WHATSAPP_NUMBER")
 
@@ -38,12 +38,12 @@ def run_portfolio_rebalancer():
 
     report_text = "\n".join(report_lines)
 
-    base_endpoint = WATI_API_ENDPOINT.rstrip("/")
-    wati_url = f"{base_endpoint}/api/v1/sendSessionMessage/{RECIPIENT_NUMBER}?messageText={requests.utils.quote(report_text)}"
+    # Clean endpoint to root domain
+    base = WATI_API_ENDPOINT.split("/api")[0]
+    wati_url = f"{base}/api/v1/sendSessionMessage/{RECIPIENT_NUMBER}?messageText={requests.utils.quote(report_text)}"
     
     headers = {
-        "Authorization": f"Bearer {WATI_ACCESS_TOKEN}",
-        "Content-Type": "application/json"
+        "Authorization": f"Bearer {WATI_ACCESS_TOKEN}"
     }
     
     resp = requests.post(wati_url, headers=headers)
