@@ -30,8 +30,8 @@ TARGET_WEIGHTS = {
 STOCKS = {"SPY", "QQQ"}
 DRIFT_LIMIT = 0.05
 MAX_AGENT_STEPS = 5
-AGENT_TIME_LIMIT = 150   # seconds for the whole agent
-LESSON_TIME_LIMIT = 60   # seconds for the day trading lesson
+AGENT_TIME_LIMIT = 330   # seconds for the whole agent
+LESSON_TIME_LIMIT = 160  # seconds for the day trading lesson
 
 # Show log lines on GitHub straight away
 sys.stdout.reconfigure(line_buffering=True)
@@ -159,7 +159,7 @@ def gemini_call(model, body):
         url,
         params={"key": GEMINI_KEY},
         json=body,
-        timeout=60,
+        timeout=150,
     )
     if r.status_code == 429:
         print("Gemini says: too many requests (free limit).")
