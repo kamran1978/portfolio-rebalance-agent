@@ -22,15 +22,26 @@ TARGET_WEIGHTS = {
 
 def send_email(subject, body):
     to_list = [e.strip() for e in RECIPIENTS.split(",") if e.strip()]
+    address = (GMAIL_ADDRESS or "").strip()
+    password = "".join((GMAIL_APP_PASSWORD or "").split())
+
+    print(f"Checks -> address has @: {'@' in address} | password length: {len(password)} (must be 16) | recipients: {len(to_list)}")
     if not to_list:
         raise Exception("No recipients. Set RECIPIENT_EMAILS secret.")
+    if len(password) != 16:
+        raise Exception("GMAIL_APP_PASSWORD is not 16 letters. Re-enter it with no spaces.")
+
     msg = EmailMessage()
     msg["Subject"] = subject
-    msg["From"] = GMAIL_ADDRESS
+    msg["From"] = address
     msg["To"] = ", ".join(to_list)
     msg.set_content(body)
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
-        smtp.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
+
+    with smtplib.SMTP("smtp.gmail.com", 587, timeout=30) as smtp:
+        smtp.ehlo()
+        smtp.starttls()
+        smtp.ehlo()
+        smtp.login(address, password)
         smtp.send_message(msg)
     print(f"Email sent to {len(to_list)} people.")
 
