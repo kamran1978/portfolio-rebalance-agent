@@ -20,6 +20,8 @@ TARGET_WEIGHTS = {"SPY": 0.50, "QQQ": 0.30, "BND": 0.10, "TLT": 0.05, "AGG": 0.0
 STOCKS = {"SPY", "QQQ"}
 DRIFT_LIMIT = 0.05
 
+GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta"
+
 
 def get_price(ticker):
     r = requests.get("https://finnhub.io/api/v1/quote",
@@ -29,6 +31,29 @@ def get_price(ticker):
     if price <= 0:
         raise Exception(f"Finnhub gave no price for {ticker}. Check FINNHUB_API_KEY.")
     return price
+
+
+def pick_gemini_models():
+    """Ask Google which models this key can use, best 'flash' ones first."""
+    names = ["gemini-flash-latest"]
+    try:
+        r = requests.get(f"{GEMINI_BASE}/models", params={"key": GEMINI_API_KEY, "pageSize": 200}, timeout=20)
+        r.raise_for_status()
+        found = [
+            m["name"].replace("models/", "")
+            for m in r.json().get("models", [])
+            if "generateContent" in m.get("supportedGenerationMethods", [])
+        ]
+        flash = [n for n in found if "flash" in n and "lite" not in n and "image" not in n and "tts" not in n]
+        names += sorted(flash, reverse=True) + found
+    except Exception as e:
+        print(f"Could not list Gemini models: {e}")
+    seen, ordered = set(), []
+    for n in names:
+        if n not in seen:
+            seen.add(n)
+            ordered.append(n)
+    return ordered
 
 
 def ask_gemini(numbers_report):
@@ -42,6 +67,7 @@ Here is today's portfolio data:
 {numbers_report}
 
 Write in very simple English, short sentences, no jargon without explaining it.
+Plain text only: no markdown, no asterisks, no hashtags.
 Use exactly these 3 sections:
 
 1. DECISION: Start with either "REBALANCE TODAY" or "WAIT - NO REBALANCE NEEDED",
@@ -55,18 +81,24 @@ Use exactly these 3 sections:
 
 Keep the whole thing under 300 words. End with: "This is education, not financial advice."
 """
-    try:
-        r = requests.post(
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
-            params={"key": GEMINI_API_KEY},
-            json={"contents": [{"parts": [{"text": prompt}]}]},
-            timeout=60,
-        )
-        r.raise_for_status()
-        return r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
-    except Exception as e:
-        print(f"Gemini error: {e}")
-        return "(AI analyst could not run today. The numbers below are still correct.)"
+    for model in pick_gemini_models()[:6]:
+        try:
+            r = requests.post(
+                f"{GEMINI_BASE}/models/{model}:generateContent",
+                params={"key": GEMINI_API_KEY},
+                json={"contents": [{"parts": [{"text": prompt}]}]},
+                timeout=90,
+            )
+            if r.status_code == 404:
+                print(f"Gemini model not available: {model}, trying next...")
+                continue
+            r.raise_for_status()
+            text = r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+            print(f"Gemini model used: {model}")
+            return text
+        except Exception as e:
+            print(f"Gemini error with {model}: {e}")
+    return "(AI analyst could not run today. The numbers below are still correct.)"
 
 
 def send_email(subject, body):
@@ -117,38 +149,4 @@ def run_portfolio_rebalancer():
 
     lines = [
         f"Total value: ${total:,.2f}",
-        f"Split now: {stock_pct:.1f}% stocks / {100 - stock_pct:.1f}% bonds  (plan: 80 / 20)",
-        "",
-        "Fund | Price | Value | Now % | Target %",
-    ]
-    trades = []
-    for r in rows:
-        now_w = r["value"] / total
-        target_w = TARGET_WEIGHTS[r["ticker"]]
-        lines.append(f"{r['ticker']} | ${r['price']:,.2f} | ${r['value']:,.2f} | {now_w*100:.1f}% | {target_w*100:.0f}%")
-        if abs(now_w - target_w) > DRIFT_LIMIT:
-            diff = round(total * target_w - r["value"], 2)
-            trades.append(f"{'BUY' if diff > 0 else 'SELL'} ${abs(diff):,.2f} of {r['ticker']}")
-
-    lines.append("")
-    if trades:
-        lines.append("Rule check: a fund is more than 5% off plan. Suggested trades:")
-        lines += [f"  - {t}" for t in trades]
-    else:
-        lines.append("Rule check: everything is within 5% of plan.")
-
-    numbers = "\n".join(lines)
-    ai_text = ask_gemini(numbers)
-
-    body = (
-        "DAILY PORTFOLIO REPORT\n\n"
-        "=== YOUR AI ANALYST ===\n" + ai_text +
-        "\n\n=== THE NUMBERS ===\n" + numbers +
-        "\n\nNo real trades were made."
-    )
-    print(body)
-    send_email(f"Portfolio Report – {date.today():%d %b %Y}", body)
-
-
-if __name__ == "__main__":
-    run_portfolio_rebalancer()
+        f"Split now: {stock_pct:.1f}% stocks / {100 - stock_pct:.1f}% bonds
