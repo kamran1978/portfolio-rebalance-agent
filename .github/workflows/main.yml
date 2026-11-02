@@ -2,7 +2,7 @@ name: Daily Autonomous Portfolio Rebalance
 
 on:
   schedule:
-    - cron: '0 3 * * *'   # 8:00 AM Pakistan time
+      - cron: '0 4,16 * * *'   # 9 AM and 9 PM Pakistan time
   workflow_dispatch:
 
 jobs:
