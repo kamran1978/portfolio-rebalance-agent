@@ -13,11 +13,11 @@ RECIPIENTS = os.environ.get("RECIPIENT_EMAILS", "")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 TARGET_WEIGHTS = {
-    "SPY": 0.25,
-    "QQQ": 0.15,
-    "BND": 0.30,
-    "TLT": 0.18,
-    "AGG": 0.12
+    "SPY": 0.50,
+    "QQQ": 0.30,
+    "BND": 0.10,
+    "TLT": 0.05,
+    "AGG": 0.05
 }
 
 def send_email(subject, body):
