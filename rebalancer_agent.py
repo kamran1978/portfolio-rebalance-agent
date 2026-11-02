@@ -1,4 +1,6 @@
 import os
+import sys
+import time
 import json
 import html
 import smtplib
@@ -28,6 +30,11 @@ TARGET_WEIGHTS = {
 STOCKS = {"SPY", "QQQ"}
 DRIFT_LIMIT = 0.05
 MAX_AGENT_STEPS = 5
+AGENT_TIME_LIMIT = 150   # seconds for the whole agent
+LESSON_TIME_LIMIT = 60   # seconds for the day trading lesson
+
+# Show log lines on GitHub straight away
+sys.stdout.reconfigure(line_buffering=True)
 
 GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta"
 FINNHUB_BASE = "https://finnhub.io/api/v1"
@@ -136,14 +143,14 @@ def pick_gemini_models():
             if "lite" in n or "image" in n or "tts" in n:
                 continue
             flash.append(n)
-        names += sorted(flash, reverse=True) + found
+        names += sorted(flash, reverse=True)
     except Exception as e:
         print("Could not list Gemini models:", e)
     ordered = []
     for n in names:
         if n not in ordered:
             ordered.append(n)
-    return ordered[:6]
+    return ordered[:3]
 
 
 def gemini_call(model, body):
@@ -152,8 +159,10 @@ def gemini_call(model, body):
         url,
         params={"key": GEMINI_KEY},
         json=body,
-        timeout=90,
+        timeout=60,
     )
+    if r.status_code == 429:
+        print("Gemini says: too many requests (free limit).")
     return r
 
 
@@ -196,10 +205,15 @@ def run_agent(numbers_report):
     first = {"role": "user", "parts": [
         {"text": AGENT_PROMPT + numbers_report}
     ]}
+    start = time.time()
     for model in pick_gemini_models():
         contents = [first]
         try:
             for step in range(MAX_AGENT_STEPS):
+                if time.time() - start > AGENT_TIME_LIMIT:
+                    print("Agent time limit reached.")
+                    return "(AI agent ran out of time today.)"
+                print("Agent step", step + 1, "with", model)
                 body = {"contents": contents, "tools": TOOLS}
                 r = gemini_call(model, body)
                 if r.status_code == 404:
@@ -275,8 +289,13 @@ def get_day_trading_lesson():
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
         "generationConfig": {"responseMimeType": "application/json"},
     }
+    start = time.time()
     for model in pick_gemini_models():
+        if time.time() - start > LESSON_TIME_LIMIT:
+            print("Lesson time limit reached.")
+            break
         try:
+            print("Day trading lesson with", model)
             r = gemini_call(model, body)
             if r.status_code == 404:
                 continue
