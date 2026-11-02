@@ -1,7 +1,9 @@
 import os
+import json
+import html
 import smtplib
 import requests
-from datetime import date
+from datetime import date, timedelta
 from email.message import EmailMessage
 from supabase import create_client, Client
 
@@ -25,46 +27,95 @@ TARGET_WEIGHTS = {
 }
 STOCKS = {"SPY", "QQQ"}
 DRIFT_LIMIT = 0.05
+MAX_AGENT_STEPS = 5
 
 GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta"
-FINNHUB_URL = "https://finnhub.io/api/v1/quote"
-
-PROMPT = """You are a friendly portfolio teacher.
-Write a short morning email for a beginner investor.
-Always write in English only.
-Use very simple English and short sentences.
-Plain text only. No markdown, no asterisks.
-
-Use exactly these 3 sections:
-
-1. DECISION: Start with "REBALANCE TODAY" or
-"WAIT - NO REBALANCE NEEDED". Then give the reason
-in 2-3 sentences. Mention drift, trading costs,
-and the 5% rule.
-
-2. WHAT THE NUMBERS MEAN: Explain Price, Value,
-Now %, Target %, and the stocks/bonds split,
-using today's real numbers.
-
-3. LESSON OF THE DAY: Teach one simple investing
-idea linked to today's numbers, with a tiny example.
-
-Keep it under 300 words.
-End with: "This is education, not financial advice."
-
-Today's portfolio data:
-"""
+FINNHUB_BASE = "https://finnhub.io/api/v1"
 
 
-def get_price(ticker):
-    params = {"symbol": ticker, "token": FINNHUB_KEY}
-    r = requests.get(FINNHUB_URL, params=params, timeout=20)
+# ---------------- FINNHUB ----------------
+
+def finnhub_get(path, params):
+    params["token"] = FINNHUB_KEY
+    url = FINNHUB_BASE + path
+    r = requests.get(url, params=params, timeout=20)
     r.raise_for_status()
-    price = float(r.json().get("c") or 0)
+    return r.json()
+
+
+def get_quote(ticker):
+    q = finnhub_get("/quote", {"symbol": ticker})
+    price = float(q.get("c") or 0)
     if price <= 0:
         raise Exception("Finnhub gave no price for " + ticker)
-    return price
+    change_pct = float(q.get("dp") or 0)
+    return price, change_pct
 
+
+def headlines(items, limit=5):
+    out = []
+    for n in items[:limit]:
+        title = (n.get("headline") or "").strip()
+        summary = (n.get("summary") or "").strip()[:200]
+        if title:
+            out.append({"headline": title, "summary": summary})
+    return out
+
+
+def tool_get_market_news():
+    items = finnhub_get("/news", {"category": "general"})
+    return {"news": headlines(items)}
+
+
+def tool_get_fund_news(symbol):
+    today = date.today()
+    params = {
+        "symbol": symbol,
+        "from": str(today - timedelta(days=3)),
+        "to": str(today),
+    }
+    items = finnhub_get("/company-news", params)
+    found = headlines(items)
+    if not found:
+        return {"news": [], "note": "No fund news. Try market news."}
+    return {"news": found}
+
+
+TOOLS = [{
+    "functionDeclarations": [
+        {
+            "name": "get_market_news",
+            "description": "Latest general stock market headlines.",
+            "parameters": {"type": "OBJECT", "properties": {}},
+        },
+        {
+            "name": "get_fund_news",
+            "description": "Recent news for one ticker, e.g. SPY.",
+            "parameters": {
+                "type": "OBJECT",
+                "properties": {
+                    "symbol": {"type": "STRING"},
+                },
+                "required": ["symbol"],
+            },
+        },
+    ]
+}]
+
+
+def run_tool(name, args):
+    print("Agent is using tool:", name, args)
+    try:
+        if name == "get_market_news":
+            return tool_get_market_news()
+        if name == "get_fund_news":
+            return tool_get_fund_news(str(args.get("symbol", "SPY")))
+        return {"error": "Unknown tool"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# ---------------- GEMINI ----------------
 
 def pick_gemini_models():
     names = ["gemini-flash-latest"]
@@ -92,38 +143,229 @@ def pick_gemini_models():
     for n in names:
         if n not in ordered:
             ordered.append(n)
-    return ordered
+    return ordered[:6]
 
 
-def ask_gemini(numbers_report):
+def gemini_call(model, body):
+    url = GEMINI_BASE + "/models/" + model + ":generateContent"
+    r = requests.post(
+        url,
+        params={"key": GEMINI_KEY},
+        json=body,
+        timeout=90,
+    )
+    return r
+
+
+AGENT_PROMPT = """You are a friendly portfolio agent and teacher.
+You write a short email for a beginner investor.
+Always write in English only. Very simple English.
+Plain text only. No markdown, no asterisks.
+
+You have tools to read news. Use them when it helps:
+- If any fund moved more than 1% today, look up why.
+- You may check general market news once.
+Do not invent news. Only use what the tools return.
+
+When you are done, write exactly these 4 sections:
+
+DECISION: Write "REBALANCE TODAY" or
+"WAIT - NO REBALANCE NEEDED". Explain why in
+2-3 sentences (drift, trading costs, the 5% rule).
+
+WHY PRICES MOVED: 2-3 sentences using the news
+you found. If you used no news, say the moves
+were small.
+
+WHAT THE NUMBERS MEAN: Explain Price, Today %,
+Value, Now %, Target %, using today's numbers.
+
+LESSON OF THE DAY: One simple investing idea
+with a tiny example.
+
+Keep it under 350 words.
+End with: "This is education, not financial advice."
+
+Today's portfolio data:
+"""
+
+
+def run_agent(numbers_report):
     if not GEMINI_KEY:
-        return "(AI analyst skipped: GEMINI_API_KEY missing.)"
-    prompt = PROMPT + numbers_report
-    body = {"contents": [{"parts": [{"text": prompt}]}]}
-    for model in pick_gemini_models()[:6]:
-        url = GEMINI_BASE + "/models/" + model + ":generateContent"
+        return "(AI agent skipped: GEMINI_API_KEY missing.)"
+    first = {"role": "user", "parts": [
+        {"text": AGENT_PROMPT + numbers_report}
+    ]}
+    for model in pick_gemini_models():
+        contents = [first]
         try:
-            r = requests.post(
-                url,
-                params={"key": GEMINI_KEY},
-                json=body,
-                timeout=90,
-            )
-            if r.status_code == 404:
-                print("Model not available:", model)
-                continue
-            r.raise_for_status()
-            data = r.json()
-            parts = data["candidates"][0]["content"]["parts"]
-            text = parts[0]["text"].strip()
-            print("Gemini model used:", model)
-            return text
+            for step in range(MAX_AGENT_STEPS):
+                body = {"contents": contents, "tools": TOOLS}
+                r = gemini_call(model, body)
+                if r.status_code == 404:
+                    print("Model not available:", model)
+                    break
+                r.raise_for_status()
+                content = r.json()["candidates"][0]["content"]
+                parts = content.get("parts", [])
+                calls = [p for p in parts if "functionCall" in p]
+                if not calls:
+                    texts = [p.get("text", "") for p in parts]
+                    print("Agent model used:", model)
+                    return "".join(texts).strip()
+                contents.append(content)
+                replies = []
+                for p in calls:
+                    fc = p["functionCall"]
+                    result = run_tool(fc["name"], fc.get("args", {}))
+                    replies.append({"functionResponse": {
+                        "name": fc["name"],
+                        "response": result,
+                    }})
+                contents.append({"role": "user", "parts": replies})
+            else:
+                print("Agent used too many steps.")
         except Exception as e:
             print("Gemini error with", model, ":", e)
-    return "(AI analyst could not run today. Numbers are still correct.)"
+    return "(AI agent could not run. Numbers are still correct.)"
 
 
-def send_email(subject, body):
+DT_PROMPT = """You teach day trading to a beginner.
+Today's date is {today}. Pick a NEW topic each day.
+Write in very simple English. English only.
+Return JSON only, in this exact shape:
+{{"passage": "one paragraph, 80-120 words",
+  "terms": [{{"term": "word", "meaning": "short simple meaning",
+             "example": "tiny example"}}]}}
+The terms list must have exactly 5 day trading terms.
+Mention once that day trading is risky and most
+beginners lose money.
+"""
+
+FALLBACK_DT = {
+    "passage": (
+        "Day trading means buying and selling within the "
+        "same day. You never hold overnight. Traders try to "
+        "profit from small price moves. It needs fast "
+        "decisions, strict rules and a stop loss on every "
+        "trade. It is risky, and most beginners lose money, "
+        "so practise on a demo account first."
+    ),
+    "terms": [
+        {"term": "Stop loss", "meaning": "An order that sells "
+         "if price falls to a set level.",
+         "example": "Buy at $100, stop at $98."},
+        {"term": "Volume", "meaning": "How many shares "
+         "traded.", "example": "High volume = busy stock."},
+        {"term": "Spread", "meaning": "Gap between buy and "
+         "sell price.", "example": "Bid $9.99, ask $10.01."},
+        {"term": "Volatility", "meaning": "How much price "
+         "jumps around.", "example": "Moves 5% a day = high."},
+        {"term": "Support", "meaning": "A price where buyers "
+         "often step in.", "example": "Stock bounces at $50."},
+    ],
+}
+
+
+def get_day_trading_lesson():
+    if not GEMINI_KEY:
+        return FALLBACK_DT
+    prompt = DT_PROMPT.format(today=str(date.today()))
+    body = {
+        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+        "generationConfig": {"responseMimeType": "application/json"},
+    }
+    for model in pick_gemini_models():
+        try:
+            r = gemini_call(model, body)
+            if r.status_code == 404:
+                continue
+            r.raise_for_status()
+            parts = r.json()["candidates"][0]["content"]["parts"]
+            text = "".join(p.get("text", "") for p in parts)
+            data = json.loads(text)
+            if data.get("passage") and len(data.get("terms", [])) >= 5:
+                data["terms"] = data["terms"][:5]
+                return data
+        except Exception as e:
+            print("Day trading lesson error:", e)
+    return FALLBACK_DT
+
+
+# ---------------- EMAIL ----------------
+
+def to_html_text(text):
+    safe = html.escape(text)
+    return safe.replace("\n", "<br>")
+
+
+def build_html(ai_text, rows, summary, trades, dt):
+    td = 'style="border:1px solid #ccc;padding:6px 10px;"'
+    th = ('style="border:1px solid #ccc;padding:6px 10px;'
+          'background:#f2f2f2;text-align:left;"')
+    tbl = 'style="border-collapse:collapse;font-size:14px;"'
+
+    h = ['<div style="font-family:Arial,sans-serif;'
+         'font-size:15px;line-height:1.5;color:#222;">']
+    h.append("<h2>Daily Portfolio Report</h2>")
+
+    h.append("<h3>Your AI Agent</h3>")
+    h.append("<p>" + to_html_text(ai_text) + "</p>")
+
+    h.append("<h3>The Numbers</h3>")
+    h.append("<p>" + to_html_text(summary) + "</p>")
+    h.append("<table " + tbl + "><tr>")
+    for col in ["Fund", "Price", "Today", "Value", "Now %", "Target %"]:
+        h.append("<th " + th + ">" + col + "</th>")
+    h.append("</tr>")
+    for r in rows:
+        cells = [
+            r["ticker"],
+            f"${r['price']:,.2f}",
+            f"{r['change']:+.2f}%",
+            f"${r['value']:,.2f}",
+            f"{r['now'] * 100:.1f}%",
+            f"{r['target'] * 100:.0f}%",
+        ]
+        h.append("<tr>")
+        for c in cells:
+            h.append("<td " + td + ">" + html.escape(c) + "</td>")
+        h.append("</tr>")
+    h.append("</table>")
+    if trades:
+        h.append("<p><b>Rule check:</b> a fund is over 5% off plan."
+                 "<br>Suggested trades: "
+                 + html.escape(", ".join(trades)) + "</p>")
+    else:
+        h.append("<p><b>Rule check:</b> everything is within "
+                 "5% of plan.</p>")
+
+    h.append("<h3>Day Trading Corner</h3>")
+    h.append("<p>" + to_html_text(dt["passage"]) + "</p>")
+    h.append("<table " + tbl + "><tr>")
+    for col in ["#", "Term", "Meaning", "Example"]:
+        h.append("<th " + th + ">" + col + "</th>")
+    h.append("</tr>")
+    for i, t in enumerate(dt["terms"], 1):
+        cells = [
+            str(i),
+            str(t.get("term", "")),
+            str(t.get("meaning", "")),
+            str(t.get("example", "")),
+        ]
+        h.append("<tr>")
+        for c in cells:
+            h.append("<td " + td + ">" + html.escape(c) + "</td>")
+        h.append("</tr>")
+    h.append("</table>")
+
+    h.append('<p style="color:#777;font-size:12px;">'
+             "No real trades were made. Education only, "
+             "not financial advice.</p></div>")
+    return "".join(h)
+
+
+def send_email(subject, text_body, html_body):
     to_list = []
     for e in RECIPIENTS.split(","):
         if e.strip():
@@ -139,7 +381,8 @@ def send_email(subject, body):
     msg["Subject"] = subject
     msg["From"] = address
     msg["To"] = ", ".join(to_list)
-    msg.set_content(body)
+    msg.set_content(text_body)
+    msg.add_alternative(html_body, subtype="html")
 
     with smtplib.SMTP("smtp.gmail.com", 587, timeout=30) as smtp:
         smtp.ehlo()
@@ -149,6 +392,8 @@ def send_email(subject, body):
         smtp.send_message(msg)
     print("Email sent to", len(to_list), "people.")
 
+
+# ---------------- MAIN ----------------
 
 def run_portfolio_rebalancer():
     if not FINNHUB_KEY:
@@ -160,7 +405,7 @@ def run_portfolio_rebalancer():
     rows = []
     for item in holdings:
         ticker = item["ticker"]
-        price = get_price(ticker)
+        price, change = get_quote(ticker)
         shares = item.get("shares")
         if shares is None:
             shares = float(item["current_value"]) / price
@@ -172,12 +417,16 @@ def run_portfolio_rebalancer():
         supabase.table("portfolio").update(
             {"current_value": value}
         ).eq("ticker", ticker).execute()
-        rows.append({"ticker": ticker, "price": price, "value": value})
+        rows.append({
+            "ticker": ticker,
+            "price": price,
+            "change": change,
+            "value": value,
+        })
 
-    total = 0
+    total = sum(r["value"] for r in rows)
     stock_total = 0
     for r in rows:
-        total += r["value"]
         if r["ticker"] in STOCKS:
             stock_total += r["value"]
     stock_pct = stock_total / total * 100
@@ -188,47 +437,61 @@ def run_portfolio_rebalancer():
     lines.append(f"Stocks now: {stock_pct:.1f}%")
     lines.append(f"Bonds now: {bond_pct:.1f}%")
     lines.append("Plan: 80% stocks / 20% bonds")
-    lines.append("")
-    lines.append("Fund | Price | Value | Now % | Target %")
+    summary = "\n".join(lines)
 
+    lines.append("")
+    lines.append("Fund | Price | Today % | Value | Now % | Target %")
     trades = []
     for r in rows:
-        ticker = r["ticker"]
-        now_w = r["value"] / total
-        target_w = TARGET_WEIGHTS[ticker]
-        price_txt = f"${r['price']:,.2f}"
-        value_txt = f"${r['value']:,.2f}"
-        now_txt = f"{now_w * 100:.1f}%"
-        target_txt = f"{target_w * 100:.0f}%"
-        row = [ticker, price_txt, value_txt, now_txt, target_txt]
+        r["now"] = r["value"] / total
+        r["target"] = TARGET_WEIGHTS[r["ticker"]]
+        row = [
+            r["ticker"],
+            f"${r['price']:,.2f}",
+            f"{r['change']:+.2f}%",
+            f"${r['value']:,.2f}",
+            f"{r['now'] * 100:.1f}%",
+            f"{r['target'] * 100:.0f}%",
+        ]
         lines.append(" | ".join(row))
-        if abs(now_w - target_w) > DRIFT_LIMIT:
-            diff = round(total * target_w - r["value"], 2)
+        if abs(r["now"] - r["target"]) > DRIFT_LIMIT:
+            diff = round(total * r["target"] - r["value"], 2)
             action = "BUY" if diff > 0 else "SELL"
-            trades.append(f"{action} ${abs(diff):,.2f} of {ticker}")
+            trades.append(f"{action} ${abs(diff):,.2f} of {r['ticker']}")
 
     lines.append("")
     if trades:
         lines.append("Rule check: a fund is over 5% off plan.")
-        lines.append("Suggested trades:")
-        for t in trades:
-            lines.append("  - " + t)
+        lines.append("Suggested trades: " + ", ".join(trades))
     else:
         lines.append("Rule check: everything is within 5% of plan.")
-
     numbers = "\n".join(lines)
-    ai_text = ask_gemini(numbers)
 
-    body = "DAILY PORTFOLIO REPORT\n\n"
-    body += "=== YOUR AI ANALYST ===\n"
-    body += ai_text
-    body += "\n\n=== THE NUMBERS ===\n"
-    body += numbers
-    body += "\n\nNo real trades were made."
+    ai_text = run_agent(numbers)
+    dt = get_day_trading_lesson()
 
-    print(body)
-    subject = "Portfolio Report - " + date.today().strftime("%d %b %Y")
-    send_email(subject, body)
+    # The agent's decision changes the email subject
+    first_part = ai_text.upper()[:150]
+    if "REBALANCE TODAY" in first_part:
+        tag = "ACTION NEEDED"
+    else:
+        tag = "No action needed"
+    today_txt = date.today().strftime("%d %b %Y")
+    subject = "Portfolio Report - " + today_txt + " - " + tag
+
+    text_body = "DAILY PORTFOLIO REPORT\n\n"
+    text_body += "=== YOUR AI AGENT ===\n" + ai_text
+    text_body += "\n\n=== THE NUMBERS ===\n" + numbers
+    text_body += "\n\n=== DAY TRADING CORNER ===\n"
+    text_body += dt["passage"] + "\n"
+    for i, t in enumerate(dt["terms"], 1):
+        text_body += f"{i}. {t.get('term')}: {t.get('meaning')}\n"
+    text_body += "\nNo real trades were made."
+
+    html_body = build_html(ai_text, rows, summary, trades, dt)
+
+    print(text_body)
+    send_email(subject, text_body, html_body)
 
 
 if __name__ == "__main__":
