@@ -2,31 +2,32 @@ name: Daily Autonomous Portfolio Rebalance
 
 on:
   schedule:
-    # 03:00 UTC corresponds to 08:00 AM PKT
-    - cron: '0 3 * * *'
+    - cron: '0 3 * * *'   # 8:00 AM Pakistan time
   workflow_dispatch:
 
 jobs:
   rebalance:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Repository
+      - name: Check out repository
         uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.10'
 
-      - name: Install Dependencies
+      - name: Install dependencies
         run: |
-          pip install supabase requests python-dotenv
+          python -m pip install --upgrade pip
+          pip install supabase
 
-      - name: Run Rebalancer
+      - name: Run python rebalancer_agent.py
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-          WATI_API_ENDPOINT: ${{ secrets.WATI_API_ENDPOINT }}
-          WATI_ACCESS_TOKEN: ${{ secrets.WATI_ACCESS_TOKEN }}
-          RECIPIENT_WHATSAPP_NUMBER: ${{ secrets.RECIPIENT_WHATSAPP_NUMBER }}
-        run: python rebalancer_agent.py
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          RECIPIENT_EMAILS: ${{ secrets.RECIPIENT_EMAILS }}
+        run: |
+          python rebalancer_agent.py
