@@ -149,4 +149,4 @@ def run_portfolio_rebalancer():
 
     lines = [
         f"Total value: ${total:,.2f}",
-        f"Split now: {stock_pct:.1f}% stocks / {100 - stock_pct:.1f}% bonds
+                f"Split now: {stock_pct:.1f}% stocks / {100 - stock_pct:.1f}% bonds (plan: 80/20)",
