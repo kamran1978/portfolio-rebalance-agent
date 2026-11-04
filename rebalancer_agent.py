@@ -5,7 +5,7 @@ import json
 import html
 import smtplib
 import requests
-from datetime import date, timedelta
+from datetime import date, timedelta, datetime, timezone
 from email.message import EmailMessage
 from supabase import create_client, Client
 
@@ -35,6 +35,8 @@ LESSON_TIME_LIMIT = 160  # seconds for the day trading lesson
 
 # Show log lines on GitHub straight away
 sys.stdout.reconfigure(line_buffering=True)
+
+PAKISTAN = timezone(timedelta(hours=5))
 
 GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta"
 FINNHUB_BASE = "https://finnhub.io/api/v1"
@@ -495,7 +497,8 @@ def run_portfolio_rebalancer():
         tag = "ACTION NEEDED"
     else:
         tag = "No action needed"
-    today_txt = date.today().strftime("%d %b %Y")
+    now_pk = datetime.now(PAKISTAN)
+    today_txt = now_pk.strftime("%d %b %Y, %I:%M %p")
     subject = "Portfolio Report - " + today_txt + " - " + tag
 
     text_body = "DAILY PORTFOLIO REPORT\n\n"
