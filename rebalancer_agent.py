@@ -126,43 +126,57 @@ def run_tool(name, args):
 
 # ---------------- GEMINI ----------------
 
-def pick_gemini_models():
-    names = ["gemini-flash-latest"]
+def pick_gemini_models(prefer_lite=False):
+    """Fast 'flash' models first, then the lighter 'flash-lite' ones,
+    which have bigger free limits and are less often overloaded."""
+    flash = ["gemini-flash-latest"]
+    lite = ["gemini-flash-lite-latest"]
     try:
         params = {"key": GEMINI_KEY, "pageSize": 200}
         url = GEMINI_BASE + "/models"
         r = requests.get(url, params=params, timeout=20)
         r.raise_for_status()
-        found = []
         for m in r.json().get("models", []):
             methods = m.get("supportedGenerationMethods", [])
-            if "generateContent" in methods:
-                found.append(m["name"].replace("models/", ""))
-        flash = []
-        for n in found:
+            if "generateContent" not in methods:
+                continue
+            n = m["name"].replace("models/", "")
             if "flash" not in n:
                 continue
-            if "lite" in n or "image" in n or "tts" in n:
+            if "image" in n or "tts" in n or "audio" in n:
                 continue
-            flash.append(n)
-        names += sorted(flash, reverse=True)
+            if "lite" in n:
+                lite.append(n)
+            else:
+                flash.append(n)
     except Exception as e:
         print("Could not list Gemini models:", e)
+    flash = flash[:1] + sorted(flash[1:], reverse=True)
+    lite = lite[:1] + sorted(lite[1:], reverse=True)
+    names = (lite + flash) if prefer_lite else (flash[:1] + lite + flash[1:])
     ordered = []
     for n in names:
         if n not in ordered:
             ordered.append(n)
-    return ordered[:3]
+    return ordered[:5]
 
 
 def gemini_call(model, body):
+    """Ask Gemini. If Google is busy (503/500), wait and try again."""
     url = GEMINI_BASE + "/models/" + model + ":generateContent"
-    r = requests.post(
-        url,
-        params={"key": GEMINI_KEY},
-        json=body,
-        timeout=150,
-    )
+    r = None
+    for attempt in range(3):
+        r = requests.post(
+            url,
+            params={"key": GEMINI_KEY},
+            json=body,
+            timeout=150,
+        )
+        if r.status_code in (500, 503):
+            print("Gemini is busy (", r.status_code, "), waiting...")
+            time.sleep(15)
+            continue
+        break
     if r.status_code == 429:
         print("Gemini says: too many requests (free limit).")
     return r
@@ -208,7 +222,7 @@ def run_agent(numbers_report):
         {"text": AGENT_PROMPT + numbers_report}
     ]}
     start = time.time()
-    for model in pick_gemini_models():
+    for model in pick_gemini_models(prefer_lite=True):
         contents = [first]
         try:
             for step in range(MAX_AGENT_STEPS):
@@ -292,7 +306,7 @@ def get_day_trading_lesson():
         "generationConfig": {"responseMimeType": "application/json"},
     }
     start = time.time()
-    for model in pick_gemini_models():
+    for model in pick_gemini_models(prefer_lite=True):
         if time.time() - start > LESSON_TIME_LIMIT:
             print("Lesson time limit reached.")
             break
