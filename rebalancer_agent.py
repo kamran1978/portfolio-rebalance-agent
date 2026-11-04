@@ -16,6 +16,7 @@ GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD")
 RECIPIENTS = os.environ.get("RECIPIENT_EMAILS", "")
 # People who get a short Urdu note at the top (report stays English)
 URDU_RECIPIENTS = os.environ.get("URDU_RECIPIENTS", "")
+SENDER_NAME = "Kamran Khan - Skill Metrica Agentic AI Group"
 FINNHUB_KEY = os.environ.get("FINNHUB_API_KEY", "").strip()
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 
@@ -396,6 +397,7 @@ def build_html(ai_text, rows, summary, trades, dt):
         h.append("</tr>")
     h.append("</table>")
 
+    h.append("<p>From Kamran Khan, Skill Metrica Agentic AI Group.</p>")
     h.append('<p style="color:#777;font-size:12px;">'
              "No real trades were made. Education only, "
              "not financial advice.</p></div>")
@@ -432,7 +434,7 @@ def urdu_html():
 def send_one(smtp, address, to_list, subject, text_body, html_body):
     msg = EmailMessage()
     msg["Subject"] = subject
-    msg["From"] = address
+    msg["From"] = SENDER_NAME + " <" + address + ">"
     msg["To"] = ", ".join(to_list)
     msg.set_content(text_body)
     msg.add_alternative(html_body, subtype="html")
@@ -563,6 +565,7 @@ def run_portfolio_rebalancer():
     text_body += dt["passage"] + "\n"
     for i, t in enumerate(dt["terms"], 1):
         text_body += f"{i}. {t.get('term')}: {t.get('meaning')}\n"
+    text_body += "\nFrom Kamran Khan, Skill Metrica Agentic AI Group."
     text_body += "\nNo real trades were made."
 
     html_body = build_html(ai_text, rows, summary, trades, dt)
