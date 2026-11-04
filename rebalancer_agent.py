@@ -14,6 +14,8 @@ SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
 GMAIL_ADDRESS = os.environ.get("GMAIL_ADDRESS")
 GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD")
 RECIPIENTS = os.environ.get("RECIPIENT_EMAILS", "")
+# People who get a short Urdu note at the top (report stays English)
+URDU_RECIPIENTS = os.environ.get("URDU_RECIPIENTS", "")
 FINNHUB_KEY = os.environ.get("FINNHUB_API_KEY", "").strip()
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 
@@ -400,32 +402,71 @@ def build_html(ai_text, rows, summary, trades, dt):
     return "".join(h)
 
 
-def send_email(subject, text_body, html_body):
-    to_list = []
-    for e in RECIPIENTS.split(","):
-        if e.strip():
-            to_list.append(e.strip())
-    address = (GMAIL_ADDRESS or "").strip()
-    password = "".join((GMAIL_APP_PASSWORD or "").split())
-    if not to_list:
-        raise Exception("No recipients. Set RECIPIENT_EMAILS.")
-    if len(password) != 16:
-        raise Exception("GMAIL_APP_PASSWORD is not 16 letters.")
+URDU_NOTE = (
+    "السلام علیکم سعید بھائی،\n"
+    "یہ ای میل صرف آپ کی معلومات کے لیے ہے۔ "
+    "اس میں نیویارک اسٹاک ایکسچینج کی تازہ قیمتیں "
+    "اور میرے آزمائشی پورٹ فولیو کی رپورٹ ہے، "
+    "جو میرا بنایا ہوا اے آئی ایجنٹ خود تیار کرتا ہے۔ "
+    "میں کلاس میں آپ کو یہ دکھاؤں گا۔\n"
+    "شکریہ،\nکامران"
+)
 
+
+def split_emails(raw):
+    out = []
+    for e in (raw or "").split(","):
+        if e.strip() and e.strip().lower() not in [x.lower() for x in out]:
+            out.append(e.strip())
+    return out
+
+
+def urdu_html():
+    lines = html.escape(URDU_NOTE).replace("\n", "<br>")
+    return ('<div dir="rtl" style="font-family:Arial,sans-serif;'
+            'font-size:17px;line-height:1.9;background:#f2f2f2;'
+            'border-radius:8px;padding:12px 16px;margin-bottom:16px;'
+            'text-align:right;">' + lines + "</div>")
+
+
+def send_one(smtp, address, to_list, subject, text_body, html_body):
     msg = EmailMessage()
     msg["Subject"] = subject
     msg["From"] = address
     msg["To"] = ", ".join(to_list)
     msg.set_content(text_body)
     msg.add_alternative(html_body, subtype="html")
+    smtp.send_message(msg)
+
+
+def send_email(subject, text_body, html_body):
+    urdu_list = split_emails(URDU_RECIPIENTS)
+    urdu_lower = [x.lower() for x in urdu_list]
+    to_list = [e for e in split_emails(RECIPIENTS)
+               if e.lower() not in urdu_lower]
+    address = (GMAIL_ADDRESS or "").strip()
+    password = "".join((GMAIL_APP_PASSWORD or "").split())
+    if not to_list and not urdu_list:
+        raise Exception("No recipients. Set RECIPIENT_EMAILS.")
+    if len(password) != 16:
+        raise Exception("GMAIL_APP_PASSWORD is not 16 letters.")
 
     with smtplib.SMTP("smtp.gmail.com", 587, timeout=30) as smtp:
         smtp.ehlo()
         smtp.starttls()
         smtp.ehlo()
         smtp.login(address, password)
-        smtp.send_message(msg)
-    print("Email sent to", len(to_list), "people.")
+        if to_list:
+            send_one(smtp, address, to_list, subject,
+                     text_body, html_body)
+            print("Email sent to", len(to_list), "people.")
+        for person in urdu_list:
+            send_one(smtp, address, [person], subject,
+                     URDU_NOTE + "\n\n" + text_body,
+                     urdu_html() + html_body)
+        if urdu_list:
+            print("Email with Urdu note sent to", len(urdu_list),
+                  "people.")
 
 
 # ---------------- MAIN ----------------
